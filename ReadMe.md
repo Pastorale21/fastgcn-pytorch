@@ -1,6 +1,8 @@
 # FastGCN Implementation in PyTorch
 ---
 
+Chinese version: [ReadMe_zh.md](ReadMe_zh.md)
+
 This repository contains codes which implement the FastGCN algorithm from [FastGCN: Fast Learning with Graph Convolutional Networks via Importance Sampling](https://arxiv.org/abs/1801.10247). Training/experimental differences are highlighted and discussed below to facilitate maximal transparency.
 
 
