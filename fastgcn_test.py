@@ -10,6 +10,11 @@
 import os
 import time
 import argparse
+import math
+import zipfile
+import builtins
+import sys
+from contextlib import contextmanager
 import matplotlib.pyplot as plt
 import numpy as np
 import torch_geometric.utils as utils
@@ -34,6 +39,92 @@ cs = {
     "pink": "#CC79A7",
     "black": "#000000"
 }
+
+
+def _remove_corrupt_zip(path):
+    if not os.path.isfile(path):
+        return
+
+    try:
+        # Touching the central directory is enough to detect truncated/broken zips.
+        with zipfile.ZipFile(path, 'r') as zip_file:
+            zip_file.infolist()
+    except zipfile.BadZipFile:
+        print(f"[WARN] Corrupted archive found at {path}; deleting to force re-download.")
+        os.remove(path)
+
+
+def _prepare_dataset_archives(dataset_name, root='data'):
+    if dataset_name == 'Reddit':
+        _remove_corrupt_zip(os.path.join(root, 'raw', 'reddit.zip'))
+    elif dataset_name == 'ogbn-arxiv':
+        _remove_corrupt_zip(os.path.join(root, 'arxiv.zip'))
+    elif dataset_name == 'ogbn-products':
+        _remove_corrupt_zip(os.path.join(root, 'products.zip'))
+
+
+def _coerce_ogb_meta_field(meta_info, key):
+    value = meta_info.get(key, 'None')
+    if value is None:
+        meta_info[key] = 'None'
+        return
+
+    if isinstance(value, float) and np.isnan(value):
+        meta_info[key] = 'None'
+        return
+
+    if not isinstance(value, str):
+        meta_info[key] = str(value)
+
+
+class CompatiblePygNodePropPredDataset(PygNodePropPredDataset):
+    def process(self):
+        # OGB 1.3.5 + recent pandas can parse "None" in master.csv as NaN(float).
+        _coerce_ogb_meta_field(self.meta_info, 'additional node files')
+        _coerce_ogb_meta_field(self.meta_info, 'additional edge files')
+        super().process()
+
+
+def _auto_respond_ogb_prompt(prompt=''):
+    """
+    Make OGB dataset prompts safe in non-interactive runs.
+    Defaults:
+      - download confirmation: yes
+      - update existing dataset: no
+    Override via env vars:
+      OGB_DOWNLOAD_RESPONSE, OGB_UPDATE_RESPONSE, OGB_DEFAULT_RESPONSE
+    """
+    p = str(prompt).lower()
+    if 'update the dataset now' in p:
+        ans = os.getenv('OGB_UPDATE_RESPONSE', 'n')
+    elif ('will you proceed' in p) or ('this will download' in p):
+        ans = os.getenv('OGB_DOWNLOAD_RESPONSE', 'y')
+    else:
+        ans = os.getenv('OGB_DEFAULT_RESPONSE', 'n')
+
+    # Keep prompt/answer visible in logs for reproducibility.
+    if prompt:
+        print(prompt, end='')
+    print(ans)
+    return ans
+
+
+@contextmanager
+def _maybe_auto_input_for_ogb():
+    auto_env = os.getenv('OGB_AUTO_INPUT', '').strip().lower()
+    force_auto = auto_env in ['1', 'true', 'yes', 'on']
+    non_interactive = not sys.stdin.isatty()
+
+    if not (force_auto or non_interactive):
+        yield
+        return
+
+    old_input = builtins.input
+    builtins.input = _auto_respond_ogb_prompt
+    try:
+        yield
+    finally:
+        builtins.input = old_input
 
 # Run main
 if __name__=="__main__":
@@ -99,14 +190,22 @@ if __name__=="__main__":
     args.use_val = True if args.use_val == 'true' else False
     args.norm_feat = True if args.norm_feat == 'true' else False
     args.early_stop = args.epochs + 1 if args.early_stop <= 0 else args.early_stop
+    args.report = max(1, args.report)
+    # Keep early-stop semantics roughly in "epochs" even when reporting every N epochs.
+    early_stop_evals = max(1, int(math.ceil(args.early_stop / args.report)))
 
     # Set the architecture
     args.hidden_dim = [args.hidden_dim] * args.num_layers
 
     # ------------------------------------------------
+    # Guard against previously interrupted downloads leaving broken archives.
+    _prepare_dataset_archives(args.dataset, root='data')
+
+    # ------------------------------------------------
     # Load the data - ToUndirected ensures that we can scan edge_list[0, :] to get all of the neighbors
     if args.dataset in ['ogbn-arxiv', 'ogbn-products']:
-        dataset = PygNodePropPredDataset(name=args.dataset, root='data', transform=T.ToSparseTensor())
+        with _maybe_auto_input_for_ogb():
+            dataset = CompatiblePygNodePropPredDataset(name=args.dataset, root='data', transform=T.ToSparseTensor())
         # Extract the data
         data = dataset[0]
 
@@ -188,13 +287,28 @@ if __name__=="__main__":
 
     # ------------------------------------------------
     # Declare the model and optimizer
+    offload_precompute_default = args.fast and args.dataset in ['ogbn-products', 'ogbn-arxiv']
+    offload_env = os.getenv('OFFLOAD_PRECOMPUTE', 'auto').strip().lower()
+    if offload_env in ['1', 'true', 'yes', 'on']:
+        offload_precompute = True
+    elif offload_env in ['0', 'false', 'no', 'off']:
+        offload_precompute = False
+    else:
+        offload_precompute = offload_precompute_default
+    if offload_precompute and (not args.samp_inference):
+        print("[WARN] Enabling sampled inference for large-graph fast mode to avoid full-graph GPU OOM.")
+        args.samp_inference = True
+        args.inference_init_batch = max(args.inference_init_batch, args.init_batch)
+        args.inference_sample_size = max(args.inference_sample_size, args.sample_size)
+
     model = FastGCNv2(input_dim=X.shape[1], hidden_dims=args.hidden_dim, output_dim=max(y).item() + 1, dropout=args.drop,
                     csr_mat=adjmat, x=X,
                     samp_probs=np.ones((len(y),)) if args.samp_dist == 'uniform' else fast_gcn_probs,
                     device=user_device,
                     use_batch_norms=args.batch_norm,
                     dataset_name=args.dataset,
-                    save_path='data'
+                    save_path='data',
+                    offload_precompute=offload_precompute
                     )
     print(f"Your model:\n{model}")
     optimizer = torch.optim.Adam(params=model.parameters(), lr=args.lr, weight_decay=args.wd)
@@ -271,9 +385,9 @@ if __name__=="__main__":
 
             # Check the validation performance ONLY if we are not performing sampled inference
             max_acc = max(test_acc)
-            if len(val_hist) > args.early_stop:
+            if len(val_hist) > early_stop_evals:
 
-                if val_hist[-(args.early_stop + 1)] <= min(val_hist[-args.early_stop:]):
+                if val_hist[-(early_stop_evals + 1)] <= min(val_hist[-early_stop_evals:]):
                     print(f"[STOP] early stopping at iteration: {i}\n")
                     break
 

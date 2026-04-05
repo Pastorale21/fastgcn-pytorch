@@ -37,7 +37,8 @@ class FastGCNv2(nn.Module):
                  use_batch_norms: bool = False,
                  dropout: float = 0.0, samp_probs: np.array = None,
                  device: typing.Optional = torch.device("cpu"),
-                 dataset_name: str = "", save_path: str = ""):
+                 dataset_name: str = "", save_path: str = "",
+                 offload_precompute: bool = False):
 
         # Declare super
         super().__init__()
@@ -72,18 +73,21 @@ class FastGCNv2(nn.Module):
         # Save the sampler
         self.samp_probs = samp_probs
 
-        # Save the global adjacency matrix for full batch GCN
-        if dataset_name == 'ogbn-products':
-
-            # Check for pre-computation matrix
+        # Save the global adjacency matrix and precomputed AX.
+        # When offloading is enabled, keep graph tensors on CPU to reduce GPU peak memory.
+        precompute_path = f"{save_path}/{dataset_name}_precompute.pt" if dataset_name else ""
+        if offload_precompute:
+            self.full_adj = None
             try:
-                self.precompute = torch.load(f"{save_path}/{dataset_name}_precompute.pt")
-                self.full_adj = None # IF YOUR GPU HAS ENOUGH MEMORY, CHANGE TO: csr_to_torch_coo(csr_mat).to(self.device)
+                self.precompute = torch.load(precompute_path, map_location='cpu') if precompute_path else None
             except:
-                self.full_adj = csr_to_torch_coo(csr_mat)
-                self.precompute = torch.sparse.mm(self.full_adj, x)
-                torch.save(self.precompute, f"{save_path}/{dataset_name}_precompute.pt")
+                self.precompute = None
 
+            if self.precompute is None:
+                full_adj_cpu = csr_to_torch_coo(csr_mat)
+                self.precompute = torch.sparse.mm(full_adj_cpu, x.cpu())
+                if precompute_path:
+                    torch.save(self.precompute, precompute_path)
         else:
             self.full_adj = csr_to_torch_coo(csr_mat).to(self.device)
             self.precompute = torch.sparse.mm(self.full_adj, x)
@@ -101,6 +105,9 @@ class FastGCNv2(nn.Module):
 
         # One way is to perform full pass
         if stochastic is False:
+            if self.full_adj is None:
+                raise RuntimeError("Full-batch forward is unavailable when offload_precompute=True. "
+                                   "Use sampled inference or disable offloading.")
 
             # No sampling is performed
             init_batch = None
@@ -277,8 +284,8 @@ class FastGCNv2(nn.Module):
                 if ind == 0:
 
                     # Activation
-                    out = self.batch_norms[ind](p.precomputed_forward(self.precompute[batch_adjs[ind]])) if self.use_batch_norms else p.precomputed_forward(
-                        self.precompute[batch_adjs[ind]])
+                    data = self.precompute[batch_adjs[ind]].to(self.device)
+                    out = self.batch_norms[ind](p.precomputed_forward(data)) if self.use_batch_norms else p.precomputed_forward(data)
                     out = self.activation(out)
 
                 # Final layer
