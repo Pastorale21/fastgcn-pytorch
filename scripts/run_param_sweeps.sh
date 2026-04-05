@@ -27,8 +27,9 @@ RESULT_CSV="$OUT_DIR/results.csv"
 printf "dataset,experiment,param_value,trial,status,acc,batch_time,total_time,log_path,command\n" > "$RESULT_CSV"
 
 dataset_trials() {
-    case "$1" in
-        Reddit|ogbn-arxiv|ogbn-products) echo 1 ;;
+    local dataset="$1"
+    case "$dataset" in
+        ogbn-arxiv|ogbn-products) echo 1 ;;
         *) echo 3 ;;
     esac
 }
@@ -106,7 +107,9 @@ build_cmd() {
             echo "$base_cmd" | sed -E "s/--sample_size=[^ ]+/--sample_size=${value}/"
             ;;
         init_batch)
-            echo "$base_cmd" | sed -E "s/--init_batch=[^ ]+/--init_batch=${value}/"
+            echo "$base_cmd" \
+                | sed -E "s/--init_batch=[^ ]+/--init_batch=${value}/" \
+                | sed -E "s/--early_stop=[^ ]+/--early_stop=-1/"
             ;;
         samp_dist)
             echo "$base_cmd --samp_dist='${value}'"

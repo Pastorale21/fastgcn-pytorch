@@ -63,8 +63,11 @@ chmod +x scripts/run_param_sweeps.sh
 默认行为：
 - 数据集：`PubMed Reddit`
 - 实验：`sample_size init_batch samp_dist`
-- 重复次数：`PubMed` 3 次，`Reddit` 1 次
+- 重复次数：`PubMed` 3 次，`Reddit` 3 次
 - 自动画图
+
+额外说明：
+- `init_batch` sweep 会自动关闭 early stopping，以便在固定训练预算下比较 batch 大小影响
 
 常用子集运行：
 
@@ -74,6 +77,9 @@ EXPERIMENTS="sample_size" ./scripts/run_param_sweeps.sh
 
 # 只跑 PubMed
 DATASETS="PubMed" ./scripts/run_param_sweeps.sh
+
+# 只跑 Reddit 的 init_batch 分析
+DATASETS="Reddit" EXPERIMENTS="init_batch" ./scripts/run_param_sweeps.sh
 
 # 只打印命令，不真正执行
 DRY_RUN=1 RUN_PLOTS=0 ./scripts/run_param_sweeps.sh
