@@ -215,6 +215,8 @@ def plot_dataset_experiment(summary, dataset: str, experiment: str, output_file:
 
         ax.set_ylabel(ylabel)
         ax.grid(alpha=0.25)
+        if metric in {"batch_time", "total_time"}:
+            ax.set_ylim(bottom=0.0)
 
     fig.suptitle(f"{dataset}: {EXPERIMENT_LABELS.get(experiment, experiment)} Sweep")
     fig.tight_layout()
