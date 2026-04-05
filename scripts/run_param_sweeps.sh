@@ -5,33 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-OUT_DIR="${OUT_DIR:-$ROOT_DIR/benchmarks/$(date +%Y%m%d_%H%M%S)}"
-DATASETS="${DATASETS:-Cora CiteSeer PubMed Reddit ogbn-arxiv ogbn-products}"
-MODES="${MODES:-fast_full gcn_full fast_mini}"
+OUT_DIR="${OUT_DIR:-$ROOT_DIR/param_sweeps/$(date +%Y%m%d_%H%M%S)}"
+DATASETS="${DATASETS:-PubMed Reddit}"
+EXPERIMENTS="${EXPERIMENTS:-sample_size init_batch samp_dist}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
 TASK_TIMER_INTERVAL="${TASK_TIMER_INTERVAL:-30}"
-
-# Optional Reddit tuning knobs.
-# Defaults favor faster turnaround for presentation/demo comparisons.
-REDDIT_INIT_BATCH="${REDDIT_INIT_BATCH:-1024}"
-REDDIT_SAMPLE_SIZE="${REDDIT_SAMPLE_SIZE:-5120}"
-REDDIT_INF_INIT_BATCH="${REDDIT_INF_INIT_BATCH:-1024}"
-REDDIT_INF_SAMPLE_SIZE="${REDDIT_INF_SAMPLE_SIZE:-15360}"
-REDDIT_REPORT="${REDDIT_REPORT:-20}"
-
-# Optional ogbn-arxiv tuning knobs.
-# Defaults are adjusted for faster wall-clock runs during demos.
-ARXIV_EPOCHS="${ARXIV_EPOCHS:-200}"
-ARXIV_REPORT="${ARXIV_REPORT:-50}"
-ARXIV_INF_INIT_BATCH="${ARXIV_INF_INIT_BATCH:-8192}"
-ARXIV_INF_SAMPLE_SIZE="${ARXIV_INF_SAMPLE_SIZE:-32768}"
-
-# Optional ogbn-products tuning knobs.
-# Defaults are adjusted for faster wall-clock runs during demos.
-PRODUCTS_EPOCHS="${PRODUCTS_EPOCHS:-300}"
-PRODUCTS_REPORT="${PRODUCTS_REPORT:-200}"
-PRODUCTS_INF_INIT_BATCH="${PRODUCTS_INF_INIT_BATCH:-32768}"
-PRODUCTS_INF_SAMPLE_SIZE="${PRODUCTS_INF_SAMPLE_SIZE:-131072}"
+DRY_RUN="${DRY_RUN:-0}"
 
 mkdir -p "$OUT_DIR/logs"
 export MPLBACKEND="${MPLBACKEND:-Agg}"
@@ -43,13 +22,13 @@ export OGB_UPDATE_RESPONSE="${OGB_UPDATE_RESPONSE:-n}"
 export OGB_DOWNLOAD_RESPONSE="${OGB_DOWNLOAD_RESPONSE:-y}"
 mkdir -p "$MPLCONFIGDIR"
 mkdir -p "$XDG_CACHE_HOME"
+
 RESULT_CSV="$OUT_DIR/results.csv"
-printf "dataset,mode,trial,status,acc,batch_time,total_time,log_path,command\n" > "$RESULT_CSV"
+printf "dataset,experiment,param_value,trial,status,acc,batch_time,total_time,log_path,command\n" > "$RESULT_CSV"
 
 dataset_trials() {
     case "$1" in
-        Reddit) echo 1 ;;
-        ogbn-arxiv|ogbn-products) echo 1 ;;
+        Reddit|ogbn-arxiv|ogbn-products) echo 1 ;;
         *) echo 3 ;;
     esac
 }
@@ -66,13 +45,13 @@ dataset_base_cmd() {
             echo "$PYTHON_BIN fastgcn_test.py --dataset='PubMed' --norm_feat='true' --fast='true' --hidden_dim=16 --init_batch=256 --sample_size=400 --early_stop=10 --wd=5e-4"
             ;;
         Reddit)
-            echo "$PYTHON_BIN fastgcn_test.py --dataset='Reddit' --norm_feat='false' --fast='true' --hidden_dim=128 --init_batch=${REDDIT_INIT_BATCH} --sample_size=${REDDIT_SAMPLE_SIZE} --early_stop=20 --report=${REDDIT_REPORT} --wd=1e-4"
+            echo "$PYTHON_BIN fastgcn_test.py --dataset='Reddit' --norm_feat='false' --fast='true' --hidden_dim=128 --init_batch=1024 --sample_size=5120 --early_stop=20 --report=20 --wd=1e-4"
             ;;
         ogbn-arxiv)
-            echo "$PYTHON_BIN fastgcn_test.py --dataset='ogbn-arxiv' --norm_feat='false' --fast='true' --init_batch=1024 --sample_size=10240 --early_stop=-1 --wd=0.0 --batch_norm='true' --hidden_dim=256 --num_layers=2 --drop=0.5 --scale_factor=5 --epochs=${ARXIV_EPOCHS} --lr=0.001 --report=${ARXIV_REPORT}"
+            echo "$PYTHON_BIN fastgcn_test.py --dataset='ogbn-arxiv' --norm_feat='false' --fast='true' --init_batch=1024 --sample_size=10240 --early_stop=-1 --wd=0.0 --batch_norm='true' --hidden_dim=256 --num_layers=2 --drop=0.5 --scale_factor=5 --epochs=200 --lr=0.001 --report=50"
             ;;
         ogbn-products)
-            echo "$PYTHON_BIN fastgcn_test.py --dataset='ogbn-products' --norm_feat='false' --fast='true' --init_batch=1024 --sample_size=15360 --early_stop=-1 --wd=0.0 --batch_norm='false' --hidden_dim=256 --num_layers=2 --drop=0.5 --scale_factor=1 --epochs=${PRODUCTS_EPOCHS} --lr=0.01 --report=${PRODUCTS_REPORT}"
+            echo "$PYTHON_BIN fastgcn_test.py --dataset='ogbn-products' --norm_feat='false' --fast='true' --init_batch=1024 --sample_size=15360 --early_stop=-1 --wd=0.0 --batch_norm='false' --hidden_dim=256 --num_layers=2 --drop=0.5 --scale_factor=1 --epochs=300 --lr=0.01 --report=200"
             ;;
         *)
             echo "Unknown dataset: $1" >&2
@@ -81,28 +60,34 @@ dataset_base_cmd() {
     esac
 }
 
-dataset_mini_extra() {
-    case "$1" in
-        Cora)
-            echo "--samp_inference='true' --inference_init_batch=256 --inference_sample_size=1280"
+experiment_values() {
+    local dataset="$1"
+    local experiment="$2"
+    case "$experiment" in
+        sample_size)
+            case "$dataset" in
+                Cora|CiteSeer) echo "100 200 400 800" ;;
+                PubMed) echo "100 200 400 800 1600" ;;
+                Reddit) echo "1024 2048 5120 10240" ;;
+                ogbn-arxiv) echo "2048 4096 10240 20480" ;;
+                ogbn-products) echo "4096 8192 15360 30720" ;;
+                *) return 1 ;;
+            esac
             ;;
-        CiteSeer)
-            echo "--samp_inference='true' --inference_init_batch=256 --inference_sample_size=2560"
+        init_batch)
+            case "$dataset" in
+                Cora|CiteSeer|PubMed) echo "64 128 256 512" ;;
+                Reddit) echo "256 512 1024 2048" ;;
+                ogbn-arxiv) echo "256 512 1024 2048" ;;
+                ogbn-products) echo "256 512 1024 2048" ;;
+                *) return 1 ;;
+            esac
             ;;
-        PubMed)
-            echo "--samp_inference='true' --inference_init_batch=256 --inference_sample_size=2560"
-            ;;
-        Reddit)
-            echo "--samp_inference='true' --inference_init_batch=${REDDIT_INF_INIT_BATCH} --inference_sample_size=${REDDIT_INF_SAMPLE_SIZE}"
-            ;;
-        ogbn-arxiv)
-            echo "--samp_inference='true' --inference_init_batch=${ARXIV_INF_INIT_BATCH} --inference_sample_size=${ARXIV_INF_SAMPLE_SIZE}"
-            ;;
-        ogbn-products)
-            echo "--samp_inference='true' --inference_init_batch=${PRODUCTS_INF_INIT_BATCH} --inference_sample_size=${PRODUCTS_INF_SAMPLE_SIZE}"
+        samp_dist)
+            echo "uniform importance"
             ;;
         *)
-            echo "Unknown dataset: $1" >&2
+            echo "Unknown experiment: $experiment" >&2
             return 1
             ;;
     esac
@@ -110,26 +95,24 @@ dataset_mini_extra() {
 
 build_cmd() {
     local dataset="$1"
-    local mode="$2"
+    local experiment="$2"
+    local value="$3"
     local base_cmd
-    local mini_extra
 
     base_cmd="$(dataset_base_cmd "$dataset")"
-    mini_extra="$(dataset_mini_extra "$dataset")"
 
-    case "$mode" in
-        fast_full)
-            echo "$base_cmd"
+    case "$experiment" in
+        sample_size)
+            echo "$base_cmd" | sed -E "s/--sample_size=[^ ]+/--sample_size=${value}/"
             ;;
-        gcn_full)
-            # Use sed to robustly flip the flag regardless of quote style.
-            echo "$base_cmd" | sed -e "s/--fast='true'/--fast='false'/" -e "s/--fast=true/--fast=false/"
+        init_batch)
+            echo "$base_cmd" | sed -E "s/--init_batch=[^ ]+/--init_batch=${value}/"
             ;;
-        fast_mini)
-            echo "$base_cmd $mini_extra"
+        samp_dist)
+            echo "$base_cmd --samp_dist='${value}'"
             ;;
         *)
-            echo "Unknown mode: $mode" >&2
+            echo "Unknown experiment: $experiment" >&2
             return 1
             ;;
     esac
@@ -182,12 +165,14 @@ render_progress() {
 
 run_one() {
     local dataset="$1"
-    local mode="$2"
-    local trial="$3"
-    local run_idx="$4"
-    local run_total="$5"
-    local run_start_ts="$6"
+    local experiment="$2"
+    local value="$3"
+    local trial="$4"
+    local run_idx="$5"
+    local run_total="$6"
+    local run_start_ts="$7"
     local cmd
+    local safe_value
     local log_file
     local status
     local cmd_pid
@@ -199,11 +184,19 @@ run_one() {
     local batch_time
     local total_time
 
-    cmd="$(build_cmd "$dataset" "$mode")"
-    log_file="$OUT_DIR/logs/${dataset}_${mode}_trial${trial}.log"
+    cmd="$(build_cmd "$dataset" "$experiment" "$value")"
+    safe_value="$(printf "%s" "$value" | tr ' /' '__')"
+    log_file="$OUT_DIR/logs/${dataset}_${experiment}_${safe_value}_trial${trial}.log"
 
     render_progress "$((run_idx - 1))" "$run_total" "$run_start_ts"
-    echo ">>> [${run_idx}/${run_total}] [$dataset][$mode][trial $trial] $cmd"
+    echo ">>> [${run_idx}/${run_total}] [$dataset][$experiment=$value][trial $trial] $cmd"
+
+    if [[ "$DRY_RUN" == "1" ]]; then
+        printf '"%s","%s","%s",%s,"%s","%s","%s","%s","%s","%s"\n' \
+            "$dataset" "$experiment" "$value" "$trial" "dry_run" "NA" "NA" "NA" "$log_file" "$cmd" >> "$RESULT_CSV"
+        render_progress "$run_idx" "$run_total" "$run_start_ts"
+        return
+    fi
 
     task_start_ts="$(date +%s)"
     set +e
@@ -216,7 +209,7 @@ run_one() {
             if ! kill -0 "$cmd_pid" 2>/dev/null; then
                 break
             fi
-            printf "[TASK] [%s][%s][trial %s] elapsed=%ss\n" "$dataset" "$mode" "$trial" "$(( $(date +%s) - task_start_ts ))"
+            printf "[TASK] [%s][%s=%s][trial %s] elapsed=%ss\n" "$dataset" "$experiment" "$value" "$trial" "$(( $(date +%s) - task_start_ts ))"
         done
     ) &
     timer_pid=$!
@@ -251,42 +244,41 @@ run_one() {
         fi
     fi
 
-    printf '"%s","%s",%s,"%s","%s","%s","%s","%s","%s"\n' \
-        "$dataset" "$mode" "$trial" "$run_status" "$acc" "$batch_time" "$total_time" "$log_file" "$cmd" >> "$RESULT_CSV"
+    printf '"%s","%s","%s",%s,"%s","%s","%s","%s","%s","%s"\n' \
+        "$dataset" "$experiment" "$value" "$trial" "$run_status" "$acc" "$batch_time" "$total_time" "$log_file" "$cmd" >> "$RESULT_CSV"
 
     render_progress "$run_idx" "$run_total" "$run_start_ts"
 }
 
 read -r -a dataset_arr <<< "$DATASETS"
-read -r -a mode_arr <<< "$MODES"
+read -r -a experiment_arr <<< "$EXPERIMENTS"
 
 total_runs=0
 for dataset in "${dataset_arr[@]}"; do
     trials="$(dataset_trials "$dataset")"
-    for mode in "${mode_arr[@]}"; do
-        total_runs=$((total_runs + trials))
+    for experiment in "${experiment_arr[@]}"; do
+        read -r -a values <<< "$(experiment_values "$dataset" "$experiment")"
+        total_runs=$((total_runs + ${#values[@]} * trials))
     done
 done
 
 run_idx=0
 run_start_ts="$(date +%s)"
-
 for dataset in "${dataset_arr[@]}"; do
     trials="$(dataset_trials "$dataset")"
-    for mode in "${mode_arr[@]}"; do
-        for ((trial = 1; trial <= trials; trial++)); do
-            run_idx=$((run_idx + 1))
-            run_one "$dataset" "$mode" "$trial" "$run_idx" "$total_runs" "$run_start_ts"
+    for experiment in "${experiment_arr[@]}"; do
+        read -r -a values <<< "$(experiment_values "$dataset" "$experiment")"
+        for value in "${values[@]}"; do
+            for trial in $(seq 1 "$trials"); do
+                run_idx=$((run_idx + 1))
+                run_one "$dataset" "$experiment" "$value" "$trial" "$run_idx" "$total_runs" "$run_start_ts"
+            done
         done
     done
 done
 
-echo "Saved raw results to: $RESULT_CSV"
-
-if [[ "$RUN_PLOTS" == "1" ]]; then
-    if ! "$PYTHON_BIN" "$ROOT_DIR/scripts/plot_benchmark_results.py" --input "$RESULT_CSV" --outdir "$OUT_DIR"; then
-        echo "Plotting failed. Raw CSV and logs are still available at: $OUT_DIR" >&2
-    fi
+if [[ "$RUN_PLOTS" == "1" && "$DRY_RUN" != "1" ]]; then
+    "$PYTHON_BIN" scripts/plot_param_sweep_results.py --input "$RESULT_CSV" --outdir "$OUT_DIR"
 fi
 
-echo "Done. Output directory: $OUT_DIR"
+echo "Results saved to: $RESULT_CSV"

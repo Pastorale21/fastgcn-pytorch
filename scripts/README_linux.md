@@ -53,3 +53,34 @@ RUN_PLOTS=0 ./scripts/run_readme_benchmarks.sh
 - `comparison_batch_time.png`
 - `tradeoff_f1_vs_total_time.png`
 
+## 5. 运行参数敏感性实验
+
+```bash
+chmod +x scripts/run_param_sweeps.sh
+./scripts/run_param_sweeps.sh
+```
+
+默认行为：
+- 数据集：`PubMed Reddit`
+- 实验：`sample_size init_batch samp_dist`
+- 重复次数：`PubMed` 3 次，`Reddit` 1 次
+- 自动画图
+
+常用子集运行：
+
+```bash
+# 只做 sample_size 分析
+EXPERIMENTS="sample_size" ./scripts/run_param_sweeps.sh
+
+# 只跑 PubMed
+DATASETS="PubMed" ./scripts/run_param_sweeps.sh
+
+# 只打印命令，不真正执行
+DRY_RUN=1 RUN_PLOTS=0 ./scripts/run_param_sweeps.sh
+```
+
+参数实验会在 `param_sweeps/<timestamp>/` 下生成：
+- `results.csv`：每次 sweep 运行明细
+- `summary.csv`：按 dataset+experiment+param_value 聚合统计
+- `logs/*.log`：每次训练日志
+- `<dataset>_<experiment>.png`：每组参数 sweep 的三联图（acc / batch time / total time）
